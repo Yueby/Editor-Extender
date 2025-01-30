@@ -1,19 +1,24 @@
 {
-  "name": "com.template.package",
-  "displayName": "Template Package",
-  "version": "0.0.1",
-  "unity": "2022.3",
-  "description": "A template package for Unity",
+  "name": "yueby.tools.editor-extender",
+  "displayName": "◆ Editor Extender",
+  "version": "0.0.7",
+  "description": "A editor window extender tool for Unity.",
   "author": {
-    "name": "Your Name",
-    "email": "your.email@example.com"
+    "name": "Yueby",
+    "email": "yueby_sp@qq.com"
   },
   "keywords": [
-    "unity",
-    "package",
-    "template"
+    "yueby",
+    "tool",
+    "editor-extender",
+    "editor",
+    "editor extender",
+    "extender",
+    "yueby tools"
   ],
-  "unityRelease": "22f1",
+  "unity": "2022.3",
   "vpmDependencies": {
-  }
-} 
+    "yueby.tools.editor-core": ">=0.0.5"
+  },
+  "unityRelease": "22f1"
+}
