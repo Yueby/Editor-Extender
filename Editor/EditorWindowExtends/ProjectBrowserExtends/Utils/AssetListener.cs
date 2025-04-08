@@ -4,6 +4,7 @@ using UnityEditor;
 using UnityEngine;
 using Yueby.EditorWindowExtends.ProjectBrowserExtends.Drawer;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
 {
@@ -13,87 +14,275 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
         public string Name;
         public string Path;
         public string Guid;
+        public string ParentGuid; // 存储父资产的GUID而不是引用
         public bool IsNewAsset;
-        public bool HasNewAsset;
 
-        public ProjectBrowserAsset Parent;
-        public List<ProjectBrowserAsset> Children = new();
-        internal Dictionary<string, ProjectBrowserAsset> _childrenDict = new(); // 新增字典以提高查找效率
-
-        public ProjectBrowserAsset(string path, string guid)
+        public ProjectBrowserAsset(string path, string guid, string parentGuid = null)
         {
             Path = path;
             Guid = guid;
+            ParentGuid = parentGuid;
             Name = System.IO.Path.GetFileName(path);
             IsNewAsset = false;
-            HasNewAsset = false;
         }
 
         public ProjectBrowserAsset() { }
+    }
 
-        public ProjectBrowserAsset FindByGuid(string guid)
+    [InitializeOnLoad]
+    public class AssetListener : AssetPostprocessor
+    {
+        // 扁平化存储所有资产，使用GUID作为键
+        public static Dictionary<string, ProjectBrowserAsset> AllAssets = new();
+        
+        // 存储父子关系的索引，用于快速查找子资产
+        internal static Dictionary<string, List<string>> _childrenIndex = new();
+        
+        // 存储新资产的集合
+        public static Dictionary<string, ProjectBrowserAsset> NewAssets = new();
+        
+        // 标记是否已初始化
+        private static bool _hasInitialized = false;
+
+        static AssetListener()
         {
-            if (Guid.Equals(guid, System.StringComparison.OrdinalIgnoreCase))
-            {
-                return this;
-            }
-
-            // 使用字典查找
-            if (_childrenDict.TryGetValue(guid, out var childInDict))
-            {
-                return childInDict; // 找到匹配的子节点
-            }
-
-            // 如果字典中未找到，遍历子节点
-            foreach (var child in Children)
-            {
-                var result = child.FindByGuid(guid);
-                if (result != null)
+            // 如果编辑器已经加载完成，手动初始化一次
+            EditorApplication.delayCall += () => {
+                if (!_hasInitialized)
                 {
-                    return result;
+                    // 异步初始化，延迟100毫秒
+                    _ = DelayedInitializeAsync(100);
                 }
+            };
+        }
+
+        // 异步延迟初始化方法
+        private static async Task DelayedInitializeAsync(int delayMs)
+        {
+            try
+            {
+                // 等待指定的毫秒数
+                await Task.Delay(delayMs);
+                
+                // 在主线程上执行初始化
+                EditorApplication.delayCall += () => {
+                    if (Application.isPlaying) return; // 避免在播放模式下初始化
+                    
+                    InitializeFileTree();
+                };
+            }
+            catch (System.Exception)
+            {
+                // 异常处理，但不输出日志
+            }
+        }
+
+        private static void InitializeFileTree()
+        {
+            // 防止重复初始化
+            _hasInitialized = true;
+            
+            // 清空现有数据
+            AllAssets.Clear();
+            _childrenIndex.Clear();
+            NewAssets.Clear();
+
+            // 初始化 Assets 和 Packages 文件夹作为顶级节点
+            var assetsGuid = AssetDatabase.AssetPathToGUID("Assets");
+            var packagesGuid = AssetDatabase.AssetPathToGUID("Packages");
+            
+            var assetsFolder = new ProjectBrowserAsset("Assets", assetsGuid);
+            var packagesFolder = new ProjectBrowserAsset("Packages", packagesGuid);
+            
+            // 添加到扁平结构
+            AllAssets[assetsGuid] = assetsFolder;
+            AllAssets[packagesGuid] = packagesFolder;
+            
+            // 初始化子节点索引
+            _childrenIndex[assetsGuid] = new List<string>();
+            _childrenIndex[packagesGuid] = new List<string>();
+            
+            // 不再预加载所有资产，采用懒加载方式
+            
+            // 初始化完成后清理缓存
+            NewAssetDrawer.ClearCache();
+        }
+
+        // 查找资产，如果不存在则尝试加载
+        public static ProjectBrowserAsset FindByGuid(string guid)
+        {
+            if (AllAssets.TryGetValue(guid, out var asset))
+                return asset;
+            
+            // 如果资产不在缓存中，尝试加载它
+            string path = AssetDatabase.GUIDToAssetPath(guid);
+            if (!string.IsNullOrEmpty(path) && (path.StartsWith("Assets/") || path.StartsWith("Packages/")))
+            {
+                // 创建临时字典存储路径到GUID的映射
+                var pathToGuidCache = new Dictionary<string, string>();
+                
+                // 添加到扁平结构
+                AddAssetToFlatStructure(path, pathToGuidCache);
+                
+                // 再次尝试获取
+                if (AllAssets.TryGetValue(guid, out asset))
+                    return asset;
             }
 
             return null;
         }
 
-        public ProjectBrowserAsset FindByPath(string path)
+        // 查找资产
+        public static ProjectBrowserAsset FindByPath(string path)
         {
-            if (Path.Equals(path, System.StringComparison.OrdinalIgnoreCase))
-            {
-                return this;
-            }
-
-            foreach (var child in Children)
-            {
-                var result = child.FindByPath(path);
-                if (result != null)
-                {
-                    return result;
-                }
-            }
-
-            return null;
+            string guid = AssetDatabase.AssetPathToGUID(path);
+            return FindByGuid(guid);
         }
 
-        public bool RemoveByGuid(string guid)
+        // 添加资产到扁平结构
+        private static void AddAssetToFlatStructure(string path, Dictionary<string, string> pathToGuidCache)
         {
-            for (var i = 0; i < Children.Count; i++)
+            // 跳过无效路径
+            if (string.IsNullOrEmpty(path) || (!path.StartsWith("Assets/") && !path.StartsWith("Packages/")))
+                return;
+                
+            // 获取父路径
+            string parentPath = System.IO.Path.GetDirectoryName(path)?.Replace('\\', '/');
+            if (string.IsNullOrEmpty(parentPath))
             {
-                if (Children[i].Guid.Equals(guid, System.StringComparison.OrdinalIgnoreCase))
+                if (path.StartsWith("Assets"))
+                    parentPath = "Assets";
+                else if (path.StartsWith("Packages"))
+                    parentPath = "Packages";
+                else
+                    return; // 无法确定父路径
+            }
+            
+            // 获取或创建父GUID
+            string parentGuid;
+            if (!pathToGuidCache.TryGetValue(parentPath, out parentGuid))
+            {
+                parentGuid = AssetDatabase.AssetPathToGUID(parentPath);
+                
+                // 如果父资产不存在于缓存中，需要先确保其被加载
+                if (!string.IsNullOrEmpty(parentGuid) && !AllAssets.ContainsKey(parentGuid))
                 {
-                    // Log.Info($"删除资产: {Children[i].Path}");
-                    _childrenDict.Remove(guid); // 修复：使用传入的guid作为键，而不是this.Guid
-                    Children.RemoveAt(i);
-                    RefreshParent(this); // 从子节点移除后刷新父节点状态
-
+                    // 递归处理父资产，确保整个路径链都被正确加载
+                    AddAssetToFlatStructure(parentPath, pathToGuidCache);
+                }
+                
+                if (!string.IsNullOrEmpty(parentGuid))
+                {
+                    pathToGuidCache[parentPath] = parentGuid;
+                }
+            }
+            
+            // 获取当前资产GUID
+            string guid = AssetDatabase.AssetPathToGUID(path);
+            if (string.IsNullOrEmpty(guid))
+                return;
+                
+            // 如果已存在，先移除旧记录
+            if (AllAssets.ContainsKey(guid))
+            {
+                RemoveAsset(guid);
+            }
+                
+            // 创建并添加资产
+            var asset = new ProjectBrowserAsset(path, guid, parentGuid);
+            AllAssets[guid] = asset;
+            pathToGuidCache[path] = guid;
+            
+            // 更新子节点索引
+            if (!string.IsNullOrEmpty(parentGuid))
+            {
+                if (!_childrenIndex.ContainsKey(parentGuid))
+                    _childrenIndex[parentGuid] = new List<string>();
+                    
+                if (!_childrenIndex[parentGuid].Contains(guid))
+                    _childrenIndex[parentGuid].Add(guid);
+            }
+            
+            // 为当前节点创建子节点索引列表（如果不存在）
+            if (!_childrenIndex.ContainsKey(guid))
+                _childrenIndex[guid] = new List<string>();
+        }
+        
+        // 获取子资产列表
+        public static List<ProjectBrowserAsset> GetChildren(string guid)
+        {
+            List<ProjectBrowserAsset> result = new List<ProjectBrowserAsset>();
+            
+            if (_childrenIndex.TryGetValue(guid, out var childrenGuids))
+            {
+                foreach (var childGuid in childrenGuids)
+                {
+                    // 尝试获取子资产，如果不存在则尝试加载
+                    ProjectBrowserAsset child = null;
+                    if (AllAssets.TryGetValue(childGuid, out child))
+                    {
+                        result.Add(child);
+                    }
+                    else
+                    {
+                        child = FindByGuid(childGuid);
+                        if (child != null)
+                        {
+                            result.Add(child);
+                        }
+                    }
+                }
+            }
+            
+            return result;
+        }
+        
+        // 获取资产的子资产GUID列表
+        public static List<string> GetChildrenGuids(string guid)
+        {
+            if (_childrenIndex.TryGetValue(guid, out var children))
+                return new List<string>(children);
+            return new List<string>();
+        }
+        
+        // 检查文件夹是否包含新资产
+        public static bool DoesDirectoryContainNewAssets(string guid)
+        {
+            // 检查此资产是否已标记为新资产
+            if (NewAssets.ContainsKey(guid))
+                return true;
+            
+            // 确保当前文件夹已被加载
+            if (!AllAssets.ContainsKey(guid))
+            {
+                FindByGuid(guid);
+            }
+                
+            if (!_childrenIndex.TryGetValue(guid, out var childrenGuids) || childrenGuids.Count == 0)
+                return false;
+                
+            // 遍历所有子资产
+            foreach (var childGuid in childrenGuids)
+            {
+                // 1. 检查子资产是否标记为新资产
+                if (NewAssets.ContainsKey(childGuid))
                     return true;
-                }
-
-                if (Children[i].RemoveByGuid(guid))
+                    
+                // 尝试获取子资产，如果不存在则尝试加载
+                ProjectBrowserAsset child = null;
+                if (!AllAssets.TryGetValue(childGuid, out child))
                 {
-                    // Log.Info($"删除资产: {Children[i].Path}");
-                    RefreshParent(this); // 更新状态
+                    child = FindByGuid(childGuid);
+                }
+                
+                if (child != null)
+                {
+                    // 2. 检查文件是否标记为新资产
+                    if (child.IsNewAsset)
+                        return true;
+                        
+                    // 3. 如果是文件夹，递归检查
+                    if (AssetDatabase.IsValidFolder(child.Path) && DoesDirectoryContainNewAssets(childGuid))
                     return true;
                 }
             }
@@ -101,192 +290,125 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
             return false;
         }
 
-        public List<ProjectBrowserAsset> AddAssetToTree(string path)
+        // 移除资产
+        public static bool RemoveAsset(string guid)
         {
-            var pathParts = path.Split('/');
-            var currentAsset = this;
-            var addedAssets = new List<ProjectBrowserAsset>(); // 用于存储被添加的资产
-
-            for (var i = 1; i < pathParts.Length; i++)
+            if (!AllAssets.TryGetValue(guid, out var asset))
+                return false;
+                
+            // 保存父GUID，后续检查父节点是否需要移除
+            string parentGuid = asset.ParentGuid;
+                
+            // 从父节点的子节点列表中移除
+            if (!string.IsNullOrEmpty(parentGuid) && _childrenIndex.TryGetValue(parentGuid, out var siblings))
             {
-                var part = pathParts[i];
-                var foundChild = currentAsset.Children.Find(child =>
-                    child.Name.Equals(part, System.StringComparison.OrdinalIgnoreCase)
-                );
-
-                if (foundChild == null)
-                {
-                    var currentPath = string.Join("/", pathParts, 0, i + 1);
-                    // 先获取资产路径，然后使用资产的GUID
-                    var guid = AssetDatabase.AssetPathToGUID(currentPath);
-                    foundChild = new ProjectBrowserAsset(currentPath, guid)
-                    {
-                        Parent = currentAsset // 设置 Parent 属性
-                    };
-                    currentAsset.Children.Add(foundChild);
-                    currentAsset._childrenDict[foundChild.Guid] = foundChild; // 更新字典
-
-                    addedAssets.Add(foundChild);
-                }
-
-                currentAsset = foundChild;
+                siblings.Remove(guid);
             }
-
-            return addedAssets; // 返回所有被添加的资产
+            
+            // 递归移除所有子节点
+            if (_childrenIndex.TryGetValue(guid, out var children))
+            {
+                // 创建一个副本以避免集合修改错误
+                var childrenCopy = children.ToList();
+                foreach (var childGuid in childrenCopy)
+                {
+                    RemoveAsset(childGuid);
+                }
+            }
+            
+            // 移除当前节点
+            _childrenIndex.Remove(guid);
+            AllAssets.Remove(guid);
+            NewAssets.Remove(guid);
+            
+            // 检查父节点是否需要移除（如果没有子节点且不是顶级节点）
+            if (!string.IsNullOrEmpty(parentGuid))
+            {
+                CheckAndRemoveEmptyParent(parentGuid);
+            }
+            
+            return true;
+        }
+        
+        // 检查并移除空父节点（没有子节点的文件夹）
+        private static void CheckAndRemoveEmptyParent(string parentGuid)
+        {
+            // 检查是否为Assets或Packages（这些是顶级节点，不能移除）
+            if (!_childrenIndex.TryGetValue(parentGuid, out var siblings) || 
+                !AllAssets.TryGetValue(parentGuid, out var parentAsset))
+                return;
+            
+            // 检查是否为Assets或Packages顶级目录
+            string path = parentAsset.Path;
+            if (path == "Assets" || path == "Packages")
+                return;
+            
+            // 如果父节点没有子节点，移除它
+            if (siblings.Count == 0)
+            {
+                // 调用RemoveAsset而不是直接删除，这样可以递归处理更高层次的父节点
+                // 但是跳过子节点检查（因为我们已经知道它没有子节点）
+                if (AllAssets.TryGetValue(parentGuid, out var asset))
+                {
+                    // 从父节点的子节点列表中移除
+                    string grandParentGuid = asset.ParentGuid;
+                    if (!string.IsNullOrEmpty(grandParentGuid) && _childrenIndex.TryGetValue(grandParentGuid, out var grandSiblings))
+                    {
+                        grandSiblings.Remove(parentGuid);
+                    }
+                    
+                    // 移除当前节点
+                    _childrenIndex.Remove(parentGuid);
+                    AllAssets.Remove(parentGuid);
+                    NewAssets.Remove(parentGuid);
+                    
+                    // 检查祖父节点是否需要移除
+                    if (!string.IsNullOrEmpty(grandParentGuid))
+                    {
+                        CheckAndRemoveEmptyParent(grandParentGuid);
+                    }
+                }
+            }
         }
 
-        public void SetNewAsset(bool isNew)
+        // 设置资产为新资产
+        public static void SetAssetAsNew(string guid, bool isNew)
         {
+            if (!AllAssets.TryGetValue(guid, out var asset))
+                return;
+                
             // 检查是否为文件夹
-            bool isFolder = AssetDatabase.IsValidFolder(Path);
+            bool isFolder = AssetDatabase.IsValidFolder(asset.Path);
             
-            // 只有非文件夹才会被标记为新资产
-            if (!isFolder && isNew)
+            if (isNew)
             {
-                IsNewAsset = true;
-                // 将新资产加入到 AssetListener.NewAssets 字典
-                if (!AssetListener.NewAssets.ContainsKey(Guid))
+                // 文件直接标记为新资产
+                // 文件夹只有在为空时才标记为新资产
+                bool shouldMark = !isFolder || (isFolder && IsEmptyFolder(guid));
+                
+                if (shouldMark)
                 {
-                    AssetListener.NewAssets[Guid] = this; // 使用 Guid 作为键
+                    asset.IsNewAsset = true;
+                    if (!NewAssets.ContainsKey(guid))
+                    {
+                        NewAssets[guid] = asset;
+                    }
                 }
             }
             else
             {
-                IsNewAsset = false;
-                // 如果之前在字典中，则移除
-                if (AssetListener.NewAssets.ContainsKey(Guid))
-                {
-                    AssetListener.NewAssets.Remove(Guid); // 根据 Guid 移除
-                }
-            }
-
-            // 更新父节点状态
-            RefreshParent(this);
-            // AssetListener.OutputJson();
-        }
-
-        public void RefreshParent(ProjectBrowserAsset asset)
-        {
-            if (asset == null)
-                return;
-            asset.HasNewAsset =
-                asset.IsNewAsset || asset.Children.Exists(child => child.HasNewAsset);
-            asset.RefreshParent(asset.Parent);
-        }
-    }
-
-    [InitializeOnLoad]
-    public class AssetListener : AssetPostprocessor
-    {
-        public static ProjectBrowserAsset Root; // 树的根节点
-
-        public static Dictionary<string, ProjectBrowserAsset> NewAssets { get; } = new();
-
-        static AssetListener()
-        {
-            InitializeFileTree(); // 初始化文件树
-        }
-
-        private static void InitializeFileTree()
-        {
-            Root = new ProjectBrowserAsset("Root", "0");
-
-            // 初始化 Assets 和 Packages 文件夹作为子节点
-            var assetsFolder = new ProjectBrowserAsset(
-                "Assets",
-                AssetDatabase.AssetPathToGUID("Assets")
-            );
-            var packagesFolder = new ProjectBrowserAsset(
-                "Packages",
-                AssetDatabase.AssetPathToGUID("Packages")
-            );
-
-            Root.Children.Add(assetsFolder);
-            Root.Children.Add(packagesFolder);
-            Root._childrenDict[assetsFolder.Guid] = assetsFolder;
-            Root._childrenDict[packagesFolder.Guid] = packagesFolder;
-
-            // 获取所有资产路径
-            var allAssetPaths = AssetDatabase.GetAllAssetPaths();
-            
-            // 预处理：按路径长度排序，可以确保父文件夹在子文件夹之前处理
-            var sortedAssetPaths = allAssetPaths
-                .Where(path => path.StartsWith("Assets/") || path.StartsWith("Packages/"))
-                .OrderBy(path => path.Count(c => c == '/'))
-                .ToArray();
-
-            // 创建路径缓存，避免重复查找
-            Dictionary<string, ProjectBrowserAsset> pathCache = new Dictionary<string, ProjectBrowserAsset>
-            {
-                { "Assets", assetsFolder },
-                { "Packages", packagesFolder }
-            };
-
-            // 批量处理资产路径
-            foreach (var assetPath in sortedAssetPaths)
-            {
-                AddAssetToTreeFast(assetPath, pathCache);
+                asset.IsNewAsset = false;
+                NewAssets.Remove(guid);
             }
         }
-
-        // 优化的资产添加方法，使用路径缓存
-        private static void AddAssetToTreeFast(string path, Dictionary<string, ProjectBrowserAsset> pathCache)
+        
+        // 检查文件夹是否为空
+        private static bool IsEmptyFolder(string guid)
         {
-            var pathParts = path.Split('/');
-            var currentPath = pathParts[0]; // Assets 或 Packages
-            var currentAsset = pathCache[currentPath];
-
-            for (var i = 1; i < pathParts.Length; i++)
-            {
-                var part = pathParts[i];
-                var nextPath = i == 1 ? currentPath + "/" + part : string.Join("/", pathParts, 0, i + 1);
+            if (!_childrenIndex.TryGetValue(guid, out var children) || children.Count == 0)
+                return true;
                 
-                // 尝试从缓存获取
-                if (!pathCache.TryGetValue(nextPath, out var nextAsset))
-                {
-                    // 尝试从当前资产的字典中查找子资产
-                    var nextGuid = AssetDatabase.AssetPathToGUID(nextPath);
-                    if (!currentAsset._childrenDict.TryGetValue(nextGuid, out nextAsset))
-                    {
-                        // 创建新资产
-                        nextAsset = new ProjectBrowserAsset(nextPath, nextGuid)
-                        {
-                            Parent = currentAsset
-                        };
-                        currentAsset.Children.Add(nextAsset);
-                        currentAsset._childrenDict[nextGuid] = nextAsset;
-                    }
-                    
-                    // 添加到路径缓存
-                    pathCache[nextPath] = nextAsset;
-                }
-                
-                currentAsset = nextAsset;
-                currentPath = nextPath;
-            }
-        }
-
-        public static void OutputJson()
-        {
-            // 序列化为 JSON
-            var json = JsonUtility.ToJson(Root, true);
-
-            // 获取桌面的路径
-            string desktopPath = System.Environment.GetFolderPath(
-                System.Environment.SpecialFolder.Desktop
-            );
-            // 定义输出的文件路径
-            string filePath = Path.Combine(desktopPath, "ProjectBrowserAssets.json");
-
-            // 如果文件已经存在，则删除它
-            if (File.Exists(filePath))
-            {
-                File.Delete(filePath);
-            }
-
-            // 将 JSON 写入文件
-            File.WriteAllText(filePath, json);
-            Debug.Log($"JSON 数据已输出到: {filePath}"); // 在控制台打印输出文件路径
+            return false;
         }
 
         static void OnPostprocessAllAssets(
@@ -296,91 +418,150 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
             string[] movedFromAssetPaths
         )
         {
-            // 清理缓存，确保获取最新数据
-            NewAssetDrawer.ClearCache();
-            
-            var importedNewAssets = new List<ProjectBrowserAsset>();
-            
-            // 创建一个临时路径缓存，提高添加速度
-            var pathCache = new Dictionary<string, ProjectBrowserAsset>();
-            
-            // 获取Assets和Packages根节点
-            var assetsNode = Root.FindByPath("Assets");
-            var packagesNode = Root.FindByPath("Packages");
-            
-            if (assetsNode != null)
-                pathCache["Assets"] = assetsNode;
-            if (packagesNode != null)
-                pathCache["Packages"] = packagesNode;
-
-            // 按路径长度排序，确保父文件夹在子文件夹之前处理
-            var sortedImportedAssets = importedAssets
-                .Where(path => path.StartsWith("Assets/") || path.StartsWith("Packages/"))
-                .OrderBy(path => path.Count(c => c == '/'))
-                .ToArray();
-
-            // 处理新导入的资产
-            foreach (var asset in sortedImportedAssets)
+            // 如果资产树尚未初始化，则跳过处理
+            if (!_hasInitialized)
             {
-                var pathParts = asset.Split('/');
-                var rootFolderName = pathParts[0]; // Assets 或 Packages
-                
-                if (pathCache.ContainsKey(rootFolderName))
+                return;
+            }
+            
+            var pathToGuidCache = new Dictionary<string, string>();
+            
+            // 合并处理需要删除的资产（已删除的 + 移动源资产）
+            List<string> allDeletedAssets = new List<string>(deletedAssets);
+            allDeletedAssets.AddRange(movedFromAssetPaths);
+            
+            // 先处理所有需要删除的资产（包括移动源）
+            foreach (var deletedAsset in allDeletedAssets)
+            {
+                if (deletedAsset.StartsWith("Assets/") || deletedAsset.StartsWith("Packages/"))
                 {
-                    // 使用优化的方法添加资产
-                    AddAssetToTreeFast(asset, pathCache);
-                    
-                    // 获取最后添加的节点（最深的节点）
-                    var addedAsset = pathCache[asset];
-                    if (addedAsset != null)
+                    string guid = AssetDatabase.AssetPathToGUID(deletedAsset);
+                    if (!string.IsNullOrEmpty(guid))
                     {
-                        // 标记为新资产
-                        addedAsset.SetNewAsset(true);
-                        importedNewAssets.Add(addedAsset);
+                        RemoveAsset(guid);
+                        ProjectBrowserExtender.Instance.RemoveAssetItem(guid);
                     }
                 }
             }
-
-            // 处理删除的资产
-            foreach (var deletedAsset in deletedAssets)
+            
+            // 合并处理需要导入的资产（新导入的 + 移动目标）
+            List<string> allImportedAssets = new List<string>(importedAssets);
+            allImportedAssets.AddRange(movedAssets);
+            
+            // 过滤掉.meta文件和不以Assets/或Packages/开头的路径
+            List<string> validAssets = allImportedAssets
+                .Where(a => (a.StartsWith("Assets/") || a.StartsWith("Packages/")) && !a.EndsWith(".meta"))
+                .ToList();
+            
+            // 首先确保所有资产都被添加到扁平结构中
+            foreach (var asset in validAssets)
             {
-                if (deletedAsset.StartsWith("Assets/"))
+                AddAssetToFlatStructure(asset, pathToGuidCache);
+            }
+            
+            // 然后再次遍历并标记为新资产
+            foreach (var asset in validAssets)
+            {
+                // 获取资产GUID
+                string guid = AssetDatabase.AssetPathToGUID(asset);
+                if (string.IsNullOrEmpty(guid))
                 {
-                    // 从 Assets 文件夹中删除资产
-                    var removedAssetGuid = AssetDatabase.AssetPathToGUID(deletedAsset);
-                    Root.FindByGuid(AssetDatabase.AssetPathToGUID("Assets"))
-                        ?.RemoveByGuid(removedAssetGuid);
-                    ProjectBrowserExtender.Instance.RemoveAssetItem(removedAssetGuid);
+                    continue;
                 }
-                else if (deletedAsset.StartsWith("Packages/"))
+                
+                // 检查是否为文件夹
+                bool isFolder = AssetDatabase.IsValidFolder(asset);
+                
+                // 再次确保资产已添加到结构中
+                if (!AllAssets.ContainsKey(guid))
                 {
-                    // 从 Packages 文件夹中删除资产
-                    var removedAssetGuid = AssetDatabase.AssetPathToGUID(deletedAsset);
-                    Root.FindByGuid(AssetDatabase.AssetPathToGUID("Packages"))
-                        ?.RemoveByGuid(removedAssetGuid);
-                    ProjectBrowserExtender.Instance.RemoveAssetItem(removedAssetGuid);
+                    AddAssetToFlatStructure(asset, pathToGuidCache);
+                    
+                    // 如果仍然不在，则跳过
+                    if (!AllAssets.ContainsKey(guid))
+                    {
+                        continue;
+                    }
+                }
+                
+                // 标记为新资产
+                ProjectBrowserAsset assetObj = AllAssets[guid];
+                
+                // 文件直接标记为新资产
+                // 文件夹只有在为空时才标记为新资产
+                bool shouldMark = !isFolder || (isFolder && IsEmptyFolder(guid));
+                
+                if (shouldMark)
+                {
+                    assetObj.IsNewAsset = true;
+                    if (!NewAssets.ContainsKey(guid))
+                    {
+                        NewAssets[guid] = assetObj;
+                    }
                 }
             }
-
-            // OutputJson(); // 每次更新后输出 JSON 数据
+            
+            // 处理完所有资产更新后，一次性清理缓存并刷新窗口
+            NewAssetDrawer.ClearCache();
         }
 
+        public static void ClearAsset(string guid)
+        {
+            if (string.IsNullOrEmpty(guid))
+                return;
+                
+            // 使用非递归方式清理所有子资产
+            ClearAssetSafe(guid);
+        }
+        
+        // 添加一个非递归实现，避免栈溢出
+        private static void ClearAssetSafe(string startGuid)
+        {
+            if (string.IsNullOrEmpty(startGuid))
+                return;
+                
+            // 使用HashSet跟踪已处理的GUID，防止循环引用
+            HashSet<string> processedGuids = new HashSet<string>();
+            
+            // 使用队列进行广度优先遍历
+            Queue<string> guidQueue = new Queue<string>();
+            guidQueue.Enqueue(startGuid);
+            
+            while (guidQueue.Count > 0)
+            {
+                string currentGuid = guidQueue.Dequeue();
+                
+                // 如果已处理过此GUID，跳过
+                if (processedGuids.Contains(currentGuid))
+                    continue;
+                    
+                // 标记为已处理
+                processedGuids.Add(currentGuid);
+                
+                // 将资产标记为非新资产
+                SetAssetAsNew(currentGuid, false);
+                
+                // 获取子资产列表并加入队列
+                if (_childrenIndex.TryGetValue(currentGuid, out var children))
+                {
+                    foreach (var childGuid in children)
+                    {
+                        if (!processedGuids.Contains(childGuid))
+                        {
+                            guidQueue.Enqueue(childGuid);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 添加一个方法以兼容旧代码
         public static void ClearAsset(ProjectBrowserAsset asset)
         {
             if (asset == null)
                 return;
 
-            // 清理缓存，确保获取最新数据
-            NewAssetDrawer.ClearCache();
-            
-            // 将当前资产的 IsNewAsset 设置为 false
-            asset.SetNewAsset(false); // 会更新资产并调用 RefreshParent
-
-            // 遍历子节点，递归调用 ClearAsset
-            foreach (var child in asset.Children)
-            {
-                ClearAsset(child); // 递归清理子节点
-            }
+            ClearAsset(asset.Guid);
         }
     }
 }
