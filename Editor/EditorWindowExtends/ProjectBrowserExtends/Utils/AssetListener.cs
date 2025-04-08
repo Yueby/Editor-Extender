@@ -2,6 +2,8 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
+using Yueby.EditorWindowExtends.ProjectBrowserExtends.Drawer;
+using System.Linq;
 
 namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
 {
@@ -16,7 +18,7 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
 
         public ProjectBrowserAsset Parent;
         public List<ProjectBrowserAsset> Children = new();
-        private Dictionary<string, ProjectBrowserAsset> _childrenDict = new(); // 新增字典以提高查找效率
+        internal Dictionary<string, ProjectBrowserAsset> _childrenDict = new(); // 新增字典以提高查找效率
 
         public ProjectBrowserAsset(string path, string guid)
         {
@@ -81,9 +83,9 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
                 if (Children[i].Guid.Equals(guid, System.StringComparison.OrdinalIgnoreCase))
                 {
                     // Log.Info($"删除资产: {Children[i].Path}");
-                    _childrenDict.Remove(Guid); // 从字典中移除
+                    _childrenDict.Remove(guid); // 修复：使用传入的guid作为键，而不是this.Guid
                     Children.RemoveAt(i);
-                    RefreshParent(this); // 从子节点移
+                    RefreshParent(this); // 从子节点移除后刷新父节点状态
 
                     return true;
                 }
@@ -115,12 +117,11 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
                 if (foundChild == null)
                 {
                     var currentPath = string.Join("/", pathParts, 0, i + 1);
-                    var instanceId = AssetDatabase.AssetPathToGUID(currentPath);
-                    foundChild = new ProjectBrowserAsset(currentPath, instanceId)
+                    // 先获取资产路径，然后使用资产的GUID
+                    var guid = AssetDatabase.AssetPathToGUID(currentPath);
+                    foundChild = new ProjectBrowserAsset(currentPath, guid)
                     {
-                        Parent =
-                            currentAsset // 设置 Parent 属性
-                        ,
+                        Parent = currentAsset // 设置 Parent 属性
                     };
                     currentAsset.Children.Add(foundChild);
                     currentAsset._childrenDict[foundChild.Guid] = foundChild; // 更新字典
@@ -136,7 +137,11 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
 
         public void SetNewAsset(bool isNew)
         {
-            if (Children.Count <= 0 && isNew)
+            // 检查是否为文件夹
+            bool isFolder = AssetDatabase.IsValidFolder(Path);
+            
+            // 只有非文件夹才会被标记为新资产
+            if (!isFolder && isNew)
             {
                 IsNewAsset = true;
                 // 将新资产加入到 AssetListener.NewAssets 字典
@@ -198,23 +203,66 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
 
             Root.Children.Add(assetsFolder);
             Root.Children.Add(packagesFolder);
+            Root._childrenDict[assetsFolder.Guid] = assetsFolder;
+            Root._childrenDict[packagesFolder.Guid] = packagesFolder;
 
             // 获取所有资产路径
             var allAssetPaths = AssetDatabase.GetAllAssetPaths();
+            
+            // 预处理：按路径长度排序，可以确保父文件夹在子文件夹之前处理
+            var sortedAssetPaths = allAssetPaths
+                .Where(path => path.StartsWith("Assets/") || path.StartsWith("Packages/"))
+                .OrderBy(path => path.Count(c => c == '/'))
+                .ToArray();
 
-            // 遍历每个资产路径
-            foreach (var assetPath in allAssetPaths)
+            // 创建路径缓存，避免重复查找
+            Dictionary<string, ProjectBrowserAsset> pathCache = new Dictionary<string, ProjectBrowserAsset>
             {
-                if (assetPath.StartsWith("Assets/"))
+                { "Assets", assetsFolder },
+                { "Packages", packagesFolder }
+            };
+
+            // 批量处理资产路径
+            foreach (var assetPath in sortedAssetPaths)
+            {
+                AddAssetToTreeFast(assetPath, pathCache);
+            }
+        }
+
+        // 优化的资产添加方法，使用路径缓存
+        private static void AddAssetToTreeFast(string path, Dictionary<string, ProjectBrowserAsset> pathCache)
+        {
+            var pathParts = path.Split('/');
+            var currentPath = pathParts[0]; // Assets 或 Packages
+            var currentAsset = pathCache[currentPath];
+
+            for (var i = 1; i < pathParts.Length; i++)
+            {
+                var part = pathParts[i];
+                var nextPath = i == 1 ? currentPath + "/" + part : string.Join("/", pathParts, 0, i + 1);
+                
+                // 尝试从缓存获取
+                if (!pathCache.TryGetValue(nextPath, out var nextAsset))
                 {
-                    // 向 Assets 文件夹添加子项目
-                    assetsFolder.AddAssetToTree(assetPath);
+                    // 尝试从当前资产的字典中查找子资产
+                    var nextGuid = AssetDatabase.AssetPathToGUID(nextPath);
+                    if (!currentAsset._childrenDict.TryGetValue(nextGuid, out nextAsset))
+                    {
+                        // 创建新资产
+                        nextAsset = new ProjectBrowserAsset(nextPath, nextGuid)
+                        {
+                            Parent = currentAsset
+                        };
+                        currentAsset.Children.Add(nextAsset);
+                        currentAsset._childrenDict[nextGuid] = nextAsset;
+                    }
+                    
+                    // 添加到路径缓存
+                    pathCache[nextPath] = nextAsset;
                 }
-                else if (assetPath.StartsWith("Packages/"))
-                {
-                    // 向 Packages 文件夹添加子项目
-                    packagesFolder.AddAssetToTree(assetPath);
-                }
+                
+                currentAsset = nextAsset;
+                currentPath = nextPath;
             }
         }
 
@@ -248,37 +296,49 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
             string[] movedFromAssetPaths
         )
         {
+            // 清理缓存，确保获取最新数据
+            NewAssetDrawer.ClearCache();
+            
             var importedNewAssets = new List<ProjectBrowserAsset>();
+            
+            // 创建一个临时路径缓存，提高添加速度
+            var pathCache = new Dictionary<string, ProjectBrowserAsset>();
+            
+            // 获取Assets和Packages根节点
+            var assetsNode = Root.FindByPath("Assets");
+            var packagesNode = Root.FindByPath("Packages");
+            
+            if (assetsNode != null)
+                pathCache["Assets"] = assetsNode;
+            if (packagesNode != null)
+                pathCache["Packages"] = packagesNode;
+
+            // 按路径长度排序，确保父文件夹在子文件夹之前处理
+            var sortedImportedAssets = importedAssets
+                .Where(path => path.StartsWith("Assets/") || path.StartsWith("Packages/"))
+                .OrderBy(path => path.Count(c => c == '/'))
+                .ToArray();
 
             // 处理新导入的资产
-            foreach (var asset in importedAssets)
+            foreach (var asset in sortedImportedAssets)
             {
-                if (asset.StartsWith("Assets/"))
+                var pathParts = asset.Split('/');
+                var rootFolderName = pathParts[0]; // Assets 或 Packages
+                
+                if (pathCache.ContainsKey(rootFolderName))
                 {
-                    // 向 Assets 文件夹添加资产，并返回新资产
-                    var newAssets = Root.FindByGuid(AssetDatabase.AssetPathToGUID("Assets"))
-                        ?.AddAssetToTree(asset);
-                    if (newAssets != null)
+                    // 使用优化的方法添加资产
+                    AddAssetToTreeFast(asset, pathCache);
+                    
+                    // 获取最后添加的节点（最深的节点）
+                    var addedAsset = pathCache[asset];
+                    if (addedAsset != null)
                     {
-                        importedNewAssets.AddRange(newAssets);
+                        // 标记为新资产
+                        addedAsset.SetNewAsset(true);
+                        importedNewAssets.Add(addedAsset);
                     }
                 }
-                else if (asset.StartsWith("Packages/"))
-                {
-                    // 向 Packages 文件夹添加资产，并返回新资产
-                    var newAssets = Root.FindByGuid(AssetDatabase.AssetPathToGUID("Packages"))
-                        ?.AddAssetToTree(asset);
-                    if (newAssets != null)
-                    {
-                        importedNewAssets.AddRange(newAssets);
-                    }
-                }
-            }
-
-            // 标记新导入的资产
-            foreach (var newAsset in importedNewAssets)
-            {
-                newAsset.SetNewAsset(true);
             }
 
             // 处理删除的资产
@@ -310,6 +370,9 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
             if (asset == null)
                 return;
 
+            // 清理缓存，确保获取最新数据
+            NewAssetDrawer.ClearCache();
+            
             // 将当前资产的 IsNewAsset 设置为 false
             asset.SetNewAsset(false); // 会更新资产并调用 RefreshParent
 

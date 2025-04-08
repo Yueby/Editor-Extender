@@ -28,7 +28,7 @@ namespace Yueby.EditorWindowExtends.AnimatorWindowExtends
             _lastList = ParameterControllerViewReflect.GetParameterReorderableList(AnimatorWindowHelper.Window);
             if (_lastList == null)
             {
-                Debug.LogWarning("Can't find parameter list, try recreate extender.");
+                // Debug.LogWarning("Can't find parameter list, try recreate extender.");
                 Instance = null;
                 return;
             }

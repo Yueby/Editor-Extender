@@ -1,6 +1,7 @@
 using UnityEditor;
 using UnityEngine;
 using Yueby.EditorWindowExtends.ProjectBrowserExtends.Core;
+using System.Collections.Generic;
 
 namespace Yueby.EditorWindowExtends.ProjectBrowserExtends.Drawer
 {
@@ -10,12 +11,27 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends.Drawer
         public override string Tooltip => "Create a new asset in the project browser";
         protected override int DefaultOrder => 1;
 
+        // 添加静态缓存字典，存储GUID到ProjectBrowserAsset的映射
+        private static Dictionary<string, ProjectBrowserAsset> _assetCache = new Dictionary<string, ProjectBrowserAsset>();
+
         public override void OnProjectBrowserGUI(AssetItem item)
         {
             if (item.Asset == null)
                 return;
 
-            item.ProjectBrowserAsset ??= AssetListener.Root.FindByGuid(item.Guid);
+            // 使用缓存查找资产，避免每帧都遍历资产树
+            if (item.ProjectBrowserAsset == null)
+            {
+                if (!_assetCache.TryGetValue(item.Guid, out var cachedAsset))
+                {
+                    cachedAsset = AssetListener.Root.FindByGuid(item.Guid);
+                    if (cachedAsset != null)
+                    {
+                        _assetCache[item.Guid] = cachedAsset;
+                    }
+                }
+                item.ProjectBrowserAsset = cachedAsset;
+            }
 
             if (item.ProjectBrowserAsset is not { HasNewAsset: true })
                 return;
@@ -53,6 +69,12 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends.Drawer
         private void ClearDot(ProjectBrowserAsset asset)
         {
             AssetListener.ClearAsset(asset);
+        }
+
+        // 添加清理缓存的方法
+        public static void ClearCache()
+        {
+            _assetCache.Clear();
         }
     }
 }
