@@ -17,11 +17,11 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
         public override string Name => "ProjectWindow";
 
         public const float RightOffset = 2f;
+        // 使用路径作为键
         private Dictionary<string, AssetItem> _assetItems;
 
         private EditorWindow _mouseOverWindow;
-        private string _lastHoveredGuid;
-        private bool _isDirty;
+        private string _lastHoveredPath;
 
         public static ProjectBrowserExtender Instance { get; private set; }
 
@@ -57,9 +57,6 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
         private void OnUpdate()
         {
             _mouseOverWindow = EditorWindow.mouseOverWindow;
-            // Debug.Log(_mouseOverWindow.GetType());
-
-            // Logger.LogInfo(_mouseOverWindow.GetType().FullName);
         }
 
         public static void OnProjectBrowserObjectAreaItemGUI(int instanceID, Rect rect)
@@ -70,10 +67,12 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
             if (Instance is { ExtenderDrawers: null })
                 return;
 
-            var guid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(instanceID));
+            string path = AssetDatabase.GetAssetPath(instanceID);
+            if (string.IsNullOrEmpty(path))
+                return;
 
             Instance.CheckRepaintAndDoGUI(
-                guid,
+                path,
                 rect,
                 (assetItem) =>
                 {
@@ -99,12 +98,15 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
             if (!Instance.IsEnabled)
                 return;
 
-            var guid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(instanceID));
+            string path = AssetDatabase.GetAssetPath(instanceID);
+            if (string.IsNullOrEmpty(path))
+                return;
+            
             if (Instance is { ExtenderDrawers: null })
                 return;
 
             Instance.CheckRepaintAndDoGUI(
-                guid,
+                path,
                 rect,
                 (assetItem) =>
                 {
@@ -123,8 +125,13 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
 
         private void OnProjectBrowserItemGUI(string guid, Rect rect)
         {
+            // 转换GUID为路径
+            string path = AssetDatabase.GUIDToAssetPath(guid);
+            if (string.IsNullOrEmpty(path))
+                return;
+                
             CheckRepaintAndDoGUI(
-                guid,
+                path,
                 rect,
                 (assetItem) =>
                 {
@@ -136,7 +143,7 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
             );
         }
 
-        private void CheckRepaintAndDoGUI(string guid, Rect rect, Action<AssetItem> callback)
+        private void CheckRepaintAndDoGUI(string path, Rect rect, Action<AssetItem> callback)
         {
             if (ExtenderDrawers == null)
                 return;
@@ -148,12 +155,12 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
             }
 
             var needRepaint = false;
-            var assetItem = GetAssetItem(guid, rect);
+            var assetItem = GetAssetItem(path, rect);
 
             // 检查是否需要重绘
-            if (assetItem.IsHover && _lastHoveredGuid != guid)
+            if (assetItem.IsHover && _lastHoveredPath != path)
             {
-                _lastHoveredGuid = guid;
+                _lastHoveredPath = path;
                 needRepaint = true;
             }
 
@@ -166,25 +173,29 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends
             }
         }
 
-        private AssetItem GetAssetItem(string guid, Rect rect)
+        private AssetItem GetAssetItem(string path, Rect rect)
         {
             _assetItems ??= new Dictionary<string, AssetItem>();
-            if (_assetItems.TryGetValue(guid, out var assetItem))
+            
+            // 如果已有缓存，刷新并返回
+            if (_assetItems.TryGetValue(path, out var assetItem))
             {
-                assetItem.Refresh(guid, rect);
+                assetItem.Refresh(path, rect);
                 return assetItem;
             }
 
-            assetItem = new AssetItem(guid, rect);
-            _assetItems.Add(guid, assetItem);
+            // 创建新的AssetItem
+            assetItem = new AssetItem(path, rect, true);
+            _assetItems.Add(path, assetItem);
             return assetItem;
         }
 
-        public void RemoveAssetItem(string guid)
+        // 按路径移除AssetItem
+        public void RemoveAssetItem(string path)
         {
-            if (_assetItems != null && _assetItems.ContainsKey(guid))
+            if (_assetItems != null && _assetItems.ContainsKey(path))
             {
-                _assetItems.Remove(guid);
+                _assetItems.Remove(path);
             }
         }
 

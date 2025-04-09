@@ -12,26 +12,23 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends.Drawer
         public override string Tooltip => "Create a new asset in the project browser";
         protected override int DefaultOrder => 1;
 
-        // 文件夹状态缓存，避免频繁检查
-        private static Dictionary<string, bool> _folderStatusCache = new Dictionary<string, bool>();
-
         public override void OnProjectBrowserGUI(AssetItem item)
         {
             if (item.Asset == null)
                 return;
 
+            string path = item.Path;
+            
             // 查找资产
-            var assetInfo = AssetListener.FindByGuid(item.Guid);
+            var assetInfo = AssetListener.FindByPath(path);
             if (assetInfo == null)
             {
                 // 由于懒加载，可能需要延迟查找
                 // 如果在AllAssets中找不到，但确实是一个有效资产，强制尝试加载
-                string path = AssetDatabase.GUIDToAssetPath(item.Guid);
-                if (!string.IsNullOrEmpty(path) && 
-                    (path.StartsWith("Assets/") || path.StartsWith("Packages/")))
+                if (!string.IsNullOrEmpty(path))
                 {
                     // 重新查找一次
-                    assetInfo = AssetListener.FindByGuid(item.Guid);
+                    assetInfo = AssetListener.FindByPath(path);
                 }
                 
                 if (assetInfo == null)
@@ -40,34 +37,18 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends.Drawer
                 
             item.ProjectBrowserAsset = assetInfo; // 设置项目资产引用
             
-            // 首先直接检查是否在NewAssets字典中
-            bool isNewAsset = AssetListener.NewAssets.ContainsKey(item.Guid);
-            
             bool shouldShowDot = false;
             
             // 判断是否应该显示dot
             if (item.IsFolder)
             {
-                // 直接在NewAssets中找到，则无需计算
-                if (isNewAsset)
-                {
-                    shouldShowDot = true;
-                }
-                else
-                {
-                    // 检查是否有缓存
-                    if (!_folderStatusCache.TryGetValue(item.Guid, out shouldShowDot))
-                    {
-                        // 计算文件夹是否包含新资产
-                        shouldShowDot = AssetListener.DoesDirectoryContainNewAssets(item.Guid);
-                        _folderStatusCache[item.Guid] = shouldShowDot;
-                    }
-                }
+                // 直接检查文件夹是否包含新资产（包括自身）
+                shouldShowDot = AssetListener.IsNewAsset(path) || AssetListener.DoesDirectoryContainNewAssets(path);
             }
             else
             {
-                // 对于文件，优先使用NewAssets字典，其次使用IsNewAsset属性
-                shouldShowDot = isNewAsset || assetInfo.IsNewAsset;
+                // 对于文件，只需检查资产是否为新资产
+                shouldShowDot = AssetListener.IsNewAsset(path);
             }
 
             if (!shouldShowDot)
@@ -105,10 +86,11 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends.Drawer
             {
                 if(assetInfo.IsNewAsset)
                 {
-                    AssetListener.SetAssetAsNew(item.Guid, false);
+                    AssetListener.SetAssetAsNew(path, false);
                 }
                 
-                 ClearCache(); // 清理缓存确保UI更新
+                // 强制刷新项目窗口
+                RefreshProjectWindow();
             }
 
             if (!item.IsFolder) return;
@@ -116,24 +98,21 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends.Drawer
                 EditorGUIUtility.isProSkin ? "d_Package Manager" : "Package Manager"
             );
             content.tooltip = "Clear New Asset Dot";
-            DrawIconButton(item, () => { ClearDot(item.Guid); }, content);
+            DrawIconButton(item, () => { ClearDot(path); }, content);
         }
 
-        private void ClearDot(string guid)
+        private void ClearDot(string path)
         {
             // 清除资产标记
-            AssetListener.ClearAsset(guid);
+            AssetListener.ClearAsset(path);
             
-            // 直接清空所有缓存，确保视图刷新
-            ClearCache();
+            // 强制刷新项目窗口
+            RefreshProjectWindow();
         }
 
-        // 添加清理缓存的方法
-        public static void ClearCache()
+        // 刷新项目窗口
+        public static void RefreshProjectWindow()
         {
-            // 完全清空文件夹状态缓存，确保下次重新计算
-            _folderStatusCache.Clear();
-            
             // 强制刷新项目窗口
             EditorApplication.RepaintProjectWindow();
         }

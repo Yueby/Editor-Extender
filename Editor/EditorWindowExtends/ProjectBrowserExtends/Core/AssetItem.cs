@@ -9,8 +9,8 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends.Core
         public Rect Rect;
         public Rect OriginRect;
 
-        public string Guid { get; private set; }
-        public string Path { get; }
+        public string Guid { get { return AssetDatabase.AssetPathToGUID(Path); } }
+        public string Path { get; private set; }
 
         public bool IsFolder { get; private set; }
         public bool IsHover { get; private set; }
@@ -18,22 +18,31 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends.Core
 
         public ProjectBrowserAsset ProjectBrowserAsset { get; set; }
 
-        public AssetItem(string guid, Rect rect)
+        public AssetItem(string path, Rect rect, bool isPath)
         {
             OriginRect = rect;
-            Guid = guid;
+            Path = path;
             Rect = rect;
             IsHover = rect.Contains(Event.current.mousePosition);
-            Path = AssetDatabase.GUIDToAssetPath(Guid);
             Asset = AssetDatabase.LoadAssetAtPath(Path, typeof(Object));
             IsFolder = !string.IsNullOrEmpty(Path) && AssetDatabase.IsValidFolder(Path);
         }
 
-        public void Refresh(string guid, Rect rect)
+        public AssetItem(string guid, Rect rect)
+        {
+            OriginRect = rect;
+            Path = AssetDatabase.GUIDToAssetPath(guid);
+            Rect = rect;
+            IsHover = rect.Contains(Event.current.mousePosition);
+            Asset = AssetDatabase.LoadAssetAtPath(Path, typeof(Object));
+            IsFolder = !string.IsNullOrEmpty(Path) && AssetDatabase.IsValidFolder(Path);
+        }
+
+        public void Refresh(string path, Rect rect)
         {
             OriginRect = rect;
             Rect = rect;
-            Guid = guid;
+            Path = path;
             IsHover = rect.Contains(Event.current.mousePosition);
         }
     }
