@@ -4,18 +4,32 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
-## [1.0.3] - 2025-04-10
+## [1.0.4] - 2025-04-16
 ### Optimized
-- 重构代码结构为完全基于路径的实现，移除了对GUID的依赖
-- 移除多余的GUID到路径转换缓存，减少内存使用
-- 将Guid属性改为计算属性，保证实时准确性
-- 删除了未使用和冗余的方法，简化了API
-- 优化了文件夹状态检查逻辑，提高性能
-- 优化了新资产标记与移除的逻辑，改进内部API结构
+- Completely redesigned asset tracking system to only monitor new assets
+- Removed unnecessary asset tree management for better performance
+- Significantly reduced memory usage by eliminating asset caching
+- Optimized drawing logic with static caching for UI elements
+- Enhanced visual performance with path status caching
+- Improved handling of asset changes without unnecessary refreshes
+- Eliminated redundant .meta file filtering for cleaner code
 
 ### Fixed
-- 修复了由GUID和路径并行使用导致的潜在不一致问题
-- 解决了ProjectBrowserExtender中的方法重载冲突
+- Fixed issue where saving scenes would incorrectly mark assets as new
+- Addressed potential stack overflow with non-recursive asset traversal
+
+## [1.0.3] - 2025-04-10
+### Optimized
+- Refactored code structure to be completely path-based, removing GUID dependencies
+- Removed redundant GUID to path conversion caching, reducing memory usage
+- Changed Guid property to a computed property for real-time accuracy
+- Deleted unused and redundant methods, simplifying the API
+- Optimized folder status checking logic for better performance
+- Improved new asset marking and removal logic with better internal API structure
+
+### Fixed
+- Fixed potential inconsistencies caused by parallel use of GUIDs and paths
+- Resolved method overload conflicts in ProjectBrowserExtender
 
 ## [1.0.2] - 2025-04-08
 ### Added

@@ -16,8 +16,6 @@ namespace Yueby.EditorWindowExtends.ProjectBrowserExtends.Core
         public bool IsHover { get; private set; }
         public Object Asset { get; private set; }
 
-        public ProjectBrowserAsset ProjectBrowserAsset { get; set; }
-
         public AssetItem(string path, Rect rect, bool isPath)
         {
             OriginRect = rect;
